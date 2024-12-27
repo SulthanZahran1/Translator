@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTextEdit, QLabel, QPushButton, QToolTip,
                              QProgressBar, QFrame)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt6.QtGui import QTextCursor, QFont, QPalette, QColor
+from PyQt6.QtGui import QTextCursor, QFont, QPalette, QColor, QCursor
 import sys
 from typing import Optional, Tuple
 import logging
@@ -123,14 +123,13 @@ class TranslationWorker(QThread):
 
 class TranslatorWidget(QWidget):
     translation_requested = pyqtSignal(str, str, str)  # text, source_lang, target_lang
-    hover_translation_requested = pyqtSignal(str)
-    manual_translation_requested = pyqtSignal(str, str, str)  # text, source_lang, target_lang
+    word_translation_requested = pyqtSignal(str, str)  # word, context
 
     def __init__(self):
         super().__init__()
         self.init_ui()
-        self.setup_tooltip_timer()
         self.loading_overlay = LoadingOverlay(self)
+        self.last_translation = {"source": "", "target": ""}  # Store last translation for context
 
     def init_ui(self):
         """Initialize the UI components."""
@@ -141,6 +140,7 @@ class TranslatorWidget(QWidget):
         korean_layout = QVBoxLayout()
         korean_label = QLabel("Korean Text")
         self.korean_editor = QTextEdit()
+        self.korean_editor.setMouseTracking(True)  # Enable mouse tracking for hover
         korean_layout.addWidget(korean_label)
         korean_layout.addWidget(self.korean_editor)
         
@@ -198,6 +198,7 @@ class TranslatorWidget(QWidget):
         english_layout = QVBoxLayout()
         english_label = QLabel("English Text")
         self.english_editor = QTextEdit()
+        self.english_editor.setMouseTracking(True)  # Enable mouse tracking for hover
         english_layout.addWidget(english_label)
         english_layout.addWidget(self.english_editor)
         
@@ -220,8 +221,63 @@ class TranslatorWidget(QWidget):
         self.ko_to_en_button.clicked.connect(self.on_ko_to_en_clicked)
         self.en_to_ko_button.clicked.connect(self.on_en_to_ko_clicked)
         
+        # Connect text selection signals
+        self.korean_editor.selectionChanged.connect(lambda: self.handle_text_selection(self.korean_editor))
+        self.english_editor.selectionChanged.connect(lambda: self.handle_text_selection(self.english_editor))
+        
         # Setup tooltip
         QToolTip.setFont(QFont('SansSerif', 10))
+
+    def handle_text_selection(self, editor):
+        """Handle text selection in either editor."""
+        cursor = editor.textCursor()
+        if cursor.hasSelection():
+            selected_text = cursor.selectedText()
+            if selected_text.strip():
+                # Determine which editor was used and get appropriate context
+                if editor == self.korean_editor:
+                    context = self.last_translation.get("source", "")
+                else:
+                    context = self.last_translation.get("target", "")
+                
+                # Emit signal for word translation
+                self.word_translation_requested.emit(selected_text, context)
+
+    def show_word_translation(self, translations: dict):
+        """Show word translation in a tooltip."""
+        if not translations:
+            return
+            
+        tooltip_text = f"Direct Translation: {translations['direct_translation']}\n"
+        if translations.get('contextual_translation'):
+            tooltip_text += f"\nContextual Meaning:\n{translations['contextual_translation']}"
+        
+        # Show tooltip near the cursor
+        cursor_pos = self.mapFromGlobal(QCursor.pos())
+        QToolTip.showText(self.mapToGlobal(cursor_pos), tooltip_text)
+
+    def on_ko_to_en_clicked(self):
+        """Handle Korean to English translation."""
+        text = self.korean_editor.toPlainText()
+        if text.strip():
+            self.last_translation["source"] = text
+            self.translation_requested.emit(text, "ko", "en")
+
+    def on_en_to_ko_clicked(self):
+        """Handle English to Korean translation."""
+        text = self.english_editor.toPlainText()
+        if text.strip():
+            self.last_translation["source"] = text
+            self.translation_requested.emit(text, "en", "ko")
+
+    def show_translation(self, text: str, target_lang: str):
+        """Display translation in the appropriate editor."""
+        if target_lang == "en":
+            self.english_editor.setText(text)
+            self.last_translation["target"] = text
+        else:
+            self.korean_editor.setText(text)
+            self.last_translation["target"] = text
 
     def show_loading(self, message: str = "Loading Model..."):
         """Show the loading overlay."""
@@ -232,66 +288,6 @@ class TranslatorWidget(QWidget):
     def hide_loading(self):
         """Hide the loading overlay."""
         self.loading_overlay.hide()
-
-    def setup_tooltip_timer(self):
-        """Setup timer for delayed tooltip translation requests."""
-        self.tooltip_timer = QTimer()
-        self.tooltip_timer.setSingleShot(True)
-        self.tooltip_timer.timeout.connect(self.request_hover_translation)
-        self.current_word: Optional[str] = None
-
-    def on_ko_to_en_clicked(self):
-        """Handle Korean to English translation."""
-        text = self.korean_editor.toPlainText()
-        if text.strip():
-            self.manual_translation_requested.emit(text, "ko", "en")
-
-    def on_en_to_ko_clicked(self):
-        """Handle English to Korean translation."""
-        text = self.english_editor.toPlainText()
-        if text.strip():
-            self.manual_translation_requested.emit(text, "en", "ko")
-
-    def mouseMoveEvent(self, event):
-        """Handle mouse movement for hover translation."""
-        # Get the editor under the cursor
-        pos = event.pos()
-        if self.korean_editor.geometry().contains(pos):
-            editor = self.korean_editor
-        elif self.english_editor.geometry().contains(pos):
-            editor = self.english_editor
-        else:
-            return
-
-        cursor = editor.cursorForPosition(editor.mapFromParent(pos))
-        if cursor is None:
-            return
-            
-        # Get word under cursor
-        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
-        word = cursor.selectedText()
-        
-        if word and word != self.current_word:
-            self.current_word = word
-            self.tooltip_timer.start(500)  # 500ms delay
-        
-        super().mouseMoveEvent(event)
-
-    def request_hover_translation(self):
-        """Request translation for hovered word."""
-        if self.current_word:
-            self.hover_translation_requested.emit(self.current_word)
-
-    def show_translation(self, text: str, target_lang: str):
-        """Display translation in the appropriate editor."""
-        if target_lang == "en":
-            self.english_editor.setText(text)
-        else:
-            self.korean_editor.setText(text)
-
-    def show_hover_translation(self, text: str, pos: Tuple[int, int]):
-        """Show hover translation tooltip."""
-        QToolTip.showText(self.mapToGlobal(pos), text)
 
 class TranslatorWindow(QMainWindow):
     def __init__(self):

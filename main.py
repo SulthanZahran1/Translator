@@ -82,8 +82,7 @@ class TranslatorApp:
         """Connect UI signals to handlers."""
         widget = self.window.translator_widget
         widget.translation_requested.connect(self.handle_translation_request)
-        widget.hover_translation_requested.connect(self.handle_hover_translation)
-        widget.manual_translation_requested.connect(self.handle_translation_request)
+        widget.word_translation_requested.connect(self.handle_word_translation)
 
     def handle_translation_request(self, text: str, source_lang: str, target_lang: str):
         """Handle translation requests."""
@@ -154,54 +153,23 @@ class TranslatorApp:
             "en"  # Default to English for error messages
         )
 
-    def handle_hover_translation(self, word: str):
-        """Handle hover translation requests."""
-        if not word.strip():
-            return
-
+    def handle_word_translation(self, word: str, context: str):
+        """Handle word translation requests."""
         try:
-            # Check cache first
-            cached_translation = self.cache.get_cached_translation(
-                word, self.source_lang, self.target_lang
-            )
+            # Get both direct and contextual translations
+            translations = self.translation_model.translate_word(word, context)
             
-            if cached_translation:
-                self.window.translator_widget.show_hover_translation(
-                    cached_translation,
-                    self.window.translator_widget.mapFromGlobal(
-                        QApplication.mousePos()
-                    )
-                )
-                return
-
-            # Analyze Korean word
-            particles = self.korean_processor.analyze_particles(word)
-            honorifics = self.korean_processor.analyze_honorifics(word)
-            
-            # Perform translation
-            translation = self.translation_model.translate(word)
-            
-            # Add grammatical information if available
-            if particles or honorifics:
-                translation += "\n\nGrammatical Info:"
-                if particles:
-                    translation += f"\nParticles: {', '.join(p[0] for p in particles)}"
-                if honorifics:
-                    translation += f"\nHonorific level: {list(honorifics.keys())}"
-            
-            # Cache the result
-            self.cache.cache_translation(
-                word, translation, self.source_lang, self.target_lang
-            )
-            
-            # Show tooltip
-            self.window.translator_widget.show_hover_translation(
-                translation,
-                self.window.translator_widget.mapFromGlobal(QApplication.mousePos())
-            )
+            # Show translations in tooltip
+            self.window.translator_widget.show_word_translation(translations)
             
         except Exception as e:
-            logger.error(f"Hover translation error: {str(e)}")
+            logger.error(f"Word translation error: {str(e)}")
+            # Show error in tooltip
+            self.window.translator_widget.show_word_translation({
+                "word": word,
+                "direct_translation": "Translation error",
+                "contextual_translation": str(e)
+            })
 
     def run(self):
         """Run the application."""
